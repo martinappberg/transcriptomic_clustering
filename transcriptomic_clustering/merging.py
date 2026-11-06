@@ -293,8 +293,8 @@ def merge_cluster_means_vars(
     # update cluster means:
     n1 = len(cluster_assignments[label_source])
     n2 = len(cluster_assignments[label_dest])
-    mean1 = cluster_means.loc[label_source]
-    mean2 = cluster_means.loc[label_dest]
+    mean1 = cluster_means.loc[label_source].copy()
+    mean2 = cluster_means.loc[label_dest].copy()  # a copy: the next lines overwrite the destination's row
 
     mean_comb = (mean1 * n1 + mean2 * n2) / (n1 + n2)
 
@@ -307,7 +307,7 @@ def merge_cluster_means_vars(
         
         var_comb = 1 / (n1 + n2 - 1) * (
             (n1 - 1) * var1 + n1 * (mean1 - mean_comb) ** 2 +
-            (n2 - 1) * var2 + n1 * (mean2 - mean_comb) ** 2
+            (n2 - 1) * var2 + n2 * (mean2 - mean_comb) ** 2
         )
 
         cluster_variances.loc[label_dest] = var_comb

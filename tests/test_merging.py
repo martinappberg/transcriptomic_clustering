@@ -114,9 +114,10 @@ def test_merge_two_clusters(adata, clusters):
         index = ['11', 2, '32'],
         columns=adata.var_names
     )
+    # the pooled variance (ddof 1): ((n2 - 1) * var2 + n1 * (mean1 - mean) ** 2 + n2 * (mean2 - mean) ** 2) / (n1 + n2 - 1)
     expected_cluster_variances = pd.DataFrame(
         np.asarray([[5, 2.25, 7.5],
-                    [10.131944, 8.333333, 5.131944],
+                    [10.694444, 9.333333, 6.694444],
                     [1.0, 0.25, 9.0]]),
         index = ['11', 2, '32'],
         columns=adata.var_names
@@ -393,3 +394,17 @@ def test_merge_clusters_one_cluster_returns_assignments_and_markers(adata):
     assignments, markers = merging.merge_clusters(adata, None, {0: list(range(adata.n_obs))}, np.zeros(adata.n_obs))
     assert assignments == {0: list(range(adata.n_obs))}
     assert markers == set()
+
+
+def test_merge_cluster_means_vars_gives_the_variance_of_the_cells():
+    """The merged mean and variance (ddof 1) equal those of the cells of both clusters, for clusters of very
+    different sizes (the destination's own term is weighted by its own size)"""
+    rng = np.random.default_rng(0)
+    src, dst = rng.normal(0.0, 1.0, (1000, 3)), rng.normal(2.0, 0.5, (10, 3))
+    assign = {'s': list(range(1000)), 'd': list(range(1000, 1010))}
+    means = pd.DataFrame([src.mean(0), dst.mean(0)], index=['s', 'd'])
+    variances = pd.DataFrame([src.var(0, ddof=1), dst.var(0, ddof=1)], index=['s', 'd'])
+    merging.merge_cluster_means_vars(assign, 's', 'd', means, variances)
+    cells = np.vstack([src, dst])
+    assert np.allclose(means.loc['d'], cells.mean(0))
+    assert np.allclose(variances.loc['d'], cells.var(0, ddof=1))
