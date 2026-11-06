@@ -226,7 +226,8 @@ def get_qdiff(q1, q2) -> np.array:
 
 
 def calc_de_score(
-    padj: np.ndarray
+    padj: np.ndarray,
+    cap: Optional[float] = None
 ) -> float:
     """
     Calculate DE score for a group of cells from padj values
@@ -235,13 +236,23 @@ def calc_de_score(
     ----------
     padj:
         adjusted p-value
+    cap:
+        if given, the most that one gene adds to the score: the score is the
+        sum of min(-log10(padj), cap), as scrattch.hicat's de.score
+        ("We define de.score for each gene as min(-log10(p.adj), 20)",
+        de_param; de_stats_pair sets padj below 1e-20 to 1e-20) and
+        Yao et al. 2023 (each DEG's contribution capped at 20).
+        None (the default): no cap
 
     Returns
     -------
     differential expression score
     """
     with np.errstate(divide='ignore'): # allow de_score = inf for padj = 0
-        de_score = np.sum(-np.log10(padj)) if len(padj) else 0
+        scores = -np.log10(np.asarray(padj, dtype=float))
+    if cap is not None:
+        scores = np.minimum(scores, cap)
+    de_score = np.sum(scores) if len(padj) else 0
 
     return de_score
 
@@ -251,6 +262,7 @@ def de_pairs_chisq(
         cl_present: pd.DataFrame,
         cl_size: Dict[Any, int],
         de_thresholds: Dict[str, Any],
+        de_score_cap: Optional[float] = None,
     ):
     """
     Compute Chi square test for pairs of cluster
@@ -262,6 +274,7 @@ def de_pairs_chisq(
     cl_present: a data frame of gene detection proportions ( clusters x genes)
     cl_size: dict of cluster name: number of observations in cluster
     de_thresholds: thresholds for filter de
+    de_score_cap: the most that one gene adds to the score (calc_de_score); None: no cap
 
     Returns
     -------
@@ -282,7 +295,7 @@ def de_pairs_chisq(
             cl2_size=cl_size[second_cluster],
             **de_thresholds
         )
-        up_score = calc_de_score(de_pair_up['p_adj'].values)
+        up_score = calc_de_score(de_pair_up['p_adj'].values, de_score_cap)
 
         de_pair_down = filter_gene_stats(
             de_stats=de_pair_stats,
@@ -291,7 +304,7 @@ def de_pairs_chisq(
             cl2_size=cl_size[second_cluster],
             **de_thresholds
         )
-        down_score = calc_de_score(de_pair_down['p_adj'].values)
+        down_score = calc_de_score(de_pair_down['p_adj'].values, de_score_cap)
 
         de_pairs[pair] = {
             'score': up_score + down_score,
