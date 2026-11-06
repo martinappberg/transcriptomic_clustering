@@ -288,3 +288,10 @@ def test_de_pairs_chisq():
 
     np.testing.assert_almost_equal(de_pairs.loc[(11,4)]['score'], expected_score, decimal=10)
     assert set(de_pairs.loc[(11,4)]['up_genes']) == set(expected_up_genes_index)
+
+def test_calc_de_score_cap():
+    """scrattch.hicat's de.score: each gene adds at most the cap, min(-log10(padj), cap); padj 0 adds the cap"""
+    padj = np.array([1e-300, 0.0, 1e-3])
+    assert np.isinf(de.calc_de_score(padj))
+    assert np.isclose(de.calc_de_score(padj, cap=20), 43.0)
+    assert de.calc_de_score(np.array([]), cap=20) == 0

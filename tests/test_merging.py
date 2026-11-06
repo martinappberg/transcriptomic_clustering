@@ -367,3 +367,22 @@ def test_merge_clusters_by_de():
     for k, v in cluster_assignments.items():
         assert set(cluster_assignments[k]) == set(expected_cluster_assignments_after_merging[k])
 
+
+
+def test_merge_clusters_by_de_score_cap():
+    """One very strong gene: without a cap its score passes score_thresh, so the pair stays apart; with the cap of
+    scrattch.hicat (each gene adds at most 20) one gene scores 20 < 150, and the pair merges"""
+    def run(cap):
+        cluster_assignments = {0: list(range(0, 500)), 1: list(range(500, 1000))}
+        genes = ['gene_a', 'gene_b', 'gene_c']
+        cluster_means = pd.DataFrame(np.array([[8., 2., 2.], [0., 2., 2.]]), index=[0, 1], columns=genes)
+        cluster_variances = pd.DataFrame(np.array([[0.1, 1., 1.], [0.01, 1., 1.]]), index=[0, 1], columns=genes)
+        present_cluster_means = pd.DataFrame(np.array([[1., 1., 1.], [0., 1., 1.]]), index=[0, 1], columns=genes)
+        thresholds = {'q1_thresh': 0.5, 'q2_thresh': None, 'cluster_size_thresh': 4, 'qdiff_thresh': 0.7,
+                      'padj_thresh': 0.01, 'lfc_thresh': 1.0, 'score_thresh': 150, 'low_thresh': 1, 'min_genes': 5}
+        merging.merge_clusters_by_de(cluster_assignments, cluster_means, cluster_variances, present_cluster_means,
+                                     cluster_means.copy(), thresholds, k=1, de_method='ebayes', de_score_cap=cap)
+        return len(cluster_assignments)
+
+    assert run(None) == 2
+    assert run(20) == 1

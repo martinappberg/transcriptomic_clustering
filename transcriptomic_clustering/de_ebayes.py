@@ -144,6 +144,7 @@ def de_pairs_ebayes(
         cl_present: pd.DataFrame,
         cl_size: Dict[Any, int],
         de_thresholds: Dict[str, Any],
+        de_score_cap: Optional[float] = None,
     ):
     """
     Computes moderated t-statistics for pairs of cluster
@@ -164,6 +165,7 @@ def de_pairs_ebayes(
                  values = per cluster variance of gene expression
     cl_size: dict of cluster name: number of observations in cluster
     de_thresholds: thresholds for filter de
+    de_score_cap: the most that one gene adds to the score (calc_de_score); None: no cap
 
     Returns
     -------
@@ -211,7 +213,7 @@ def de_pairs_ebayes(
             cl2_size=cl_size[cluster_b],
             **de_thresholds
         )
-        up_score = calc_de_score(de_pair_up['p_adj'].values)
+        up_score = calc_de_score(de_pair_up['p_adj'].values, de_score_cap)
 
         de_pair_down = filter_gene_stats(
             de_stats=de_pair_stats,
@@ -220,7 +222,7 @@ def de_pairs_ebayes(
             cl2_size=cl_size[cluster_b],
             **de_thresholds
         )
-        down_score = calc_de_score(de_pair_down['p_adj'].values)
+        down_score = calc_de_score(de_pair_down['p_adj'].values, de_score_cap)
 
         de_pairs[(cluster_a, cluster_b)] = {
             'score': up_score + down_score,
@@ -236,7 +238,8 @@ def de_pairs_ebayes(
     de_pairs = pd.DataFrame(de_pairs).T
     return de_pairs
 
-def process_pair(cl_means, cl_present, cl_size, stdev_unscaled, df, df_prior, sigma_sq_post, de_thresholds, pair):
+def process_pair(cl_means, cl_present, cl_size, stdev_unscaled, df, df_prior, sigma_sq_post, de_thresholds, pair,
+                 de_score_cap=None):
     cluster_a, cluster_b = pair
     # t-test with ebayes adjusted variances
     means_diff = cl_means.loc[cluster_a] - cl_means.loc[cluster_b]
@@ -272,7 +275,7 @@ def process_pair(cl_means, cl_present, cl_size, stdev_unscaled, df, df_prior, si
         cl2_size=cl_size[cluster_b],
         **de_thresholds
     )
-    up_score = calc_de_score(de_pair_up['p_adj'].values)
+    up_score = calc_de_score(de_pair_up['p_adj'].values, de_score_cap)
 
     de_pair_down = filter_gene_stats(
         de_stats=de_pair_stats,
@@ -281,7 +284,7 @@ def process_pair(cl_means, cl_present, cl_size, stdev_unscaled, df, df_prior, si
         cl2_size=cl_size[cluster_b],
         **de_thresholds
     )
-    down_score = calc_de_score(de_pair_down['p_adj'].values)
+    down_score = calc_de_score(de_pair_down['p_adj'].values, de_score_cap)
 
     return (pair, {
         'score': up_score + down_score,
@@ -301,7 +304,8 @@ def de_pairs_ebayes_parallel(
         cl_present: pd.DataFrame,
         cl_size: Dict[Any, int],
         de_thresholds: Dict[str, Any],
-        n_jobs: int = 1
+        n_jobs: int = 1,
+        de_score_cap: Optional[float] = None,
     ) -> pd.DataFrame:
 
     logger.info('Fitting Variances')
@@ -313,7 +317,8 @@ def de_pairs_ebayes_parallel(
 
     # de_pairs = {}
 
-    partial_process = partial(process_pair, cl_means, cl_present, cl_size, stdev_unscaled, df, df_prior, sigma_sq_post, de_thresholds)
+    partial_process = partial(process_pair, cl_means, cl_present, cl_size, stdev_unscaled, df, df_prior, sigma_sq_post, de_thresholds,
+                              de_score_cap=de_score_cap)
     
     # Use multiprocessing to parallelize the process
     with mp.Pool(processes=n_jobs) as pool:

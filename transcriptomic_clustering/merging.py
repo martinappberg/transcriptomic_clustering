@@ -36,7 +36,8 @@ def merge_clusters(
         n_markers: Optional[int] = 20,
         chunk_size: Optional[int] = None,
         return_markers_df: Optional[bool] = False,
-        n_jobs: Optional[int] = 1
+        n_jobs: Optional[int] = 1,
+        de_score_cap: Optional[float] = None
 ) -> Tuple[Dict[Any, np.ndarray], Any]:
     """
     Merge clusters based on size and differential gene expression score
@@ -69,6 +70,9 @@ def merge_clusters(
         return markers as a dataframe
     n_jobs:
         number of jobs to run in parallel
+    de_score_cap:
+        the most that one gene adds to the DE score of a pair (calc_de_score);
+        None (the default): no cap
 
     Returns
     -------
@@ -132,6 +136,7 @@ def merge_clusters(
                          thresholds,
                          k,
                          de_method,
+                         de_score_cap,
                          )
     logger.info(f'Completed Merging Clusters by DE')
     toc = time.perf_counter()
@@ -423,6 +428,7 @@ def merge_clusters_by_de(
     thresholds: Dict[str, Any],
     k: Optional[int] = 2,
     de_method: Optional[Literal['ebayes', 'chisq']] = 'ebayes',
+    de_score_cap: Optional[float] = None,
 ):
     """
     Merge clusters by the calculated gene differential expression score
@@ -449,6 +455,8 @@ def merge_clusters_by_de(
         method used for de calculation
     thresholds:
         threshold use de calculation
+    de_score_cap:
+        the most that one gene adds to the DE score of a pair (calc_de_score); None: no cap
 
     Returns
     -------
@@ -483,6 +491,7 @@ def merge_clusters_by_de(
                 present_cluster_means,
                 cl_size,
                 thresholds,
+                de_score_cap=de_score_cap,
             )
         elif de_method == 'chisq':
             scores = tc.de_pairs_chisq(
@@ -491,6 +500,7 @@ def merge_clusters_by_de(
                 present_cluster_means,
                 cl_size,
                 thresholds,
+                de_score_cap=de_score_cap,
             )
         else:
             raise ValueError(f'Unknown de_method {de_method}, must be one of [chisq, ebayes]')
