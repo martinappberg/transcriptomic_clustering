@@ -94,6 +94,7 @@ def final_merge(
         n_jobs: Optional[int] = 1,
         return_markers_df: Optional[bool] = False,
         final_merge_kwargs: FinalMergeKwargs = FinalMergeKwargs(),
+        neighbor_space: str = 'reduced',
 ) -> Tuple[List[List[int]], Union[pd.DataFrame, set]]:
     """
     Runs a final merging step on cluster assignment results
@@ -110,8 +111,15 @@ def final_merge(
         AnnData object
     cluster_assignments
         List of arrays of cell ids, one array per cluster. This is the result returned by onestep_clust/iter_clust
+    neighbor_space
+        'reduced' (the default): the nearest clusters of the DE merge are found in the PCA or latent space (Step1).
+        'markers': they are found by the correlation of the cluster means over the marker genes, as the final merge
+        of scrattch.hicat (run_consensus_clust: merge_cl(norm.dat, cl, rd.dat.t = norm.dat[markers,])); Step1 does
+        not run.
     
     """
+    if neighbor_space not in ('reduced', 'markers'):
+        raise ValueError(f"neighbor_space must be 'reduced' or 'markers', not {neighbor_space!r}")
 
     obs_by_cluster = defaultdict(lambda: [])
     for i, cell_ids in enumerate(cluster_assignments):
@@ -119,7 +127,13 @@ def final_merge(
     
     cluster_by_obs = _cluster_obs_dict_to_list(obs_by_cluster)
 
-    if final_merge_kwargs.latent_kwargs.get("latent_component") is None:
+    reduced_genes = None
+    if neighbor_space == 'markers':
+        if marker_genes is None:
+            raise ValueError("Need marker genes for the neighbors in the marker space")
+        projected_adata, reduced_genes = None, list(marker_genes)
+
+    elif final_merge_kwargs.latent_kwargs.get("latent_component") is None:
 
         if marker_genes is None:
             raise ValueError("Need marker genes to run PCA")
@@ -212,6 +226,7 @@ def final_merge(
         cluster_by_obs=cluster_by_obs,
         return_markers_df=return_markers_df,
         n_jobs=n_jobs,
+        reduced_genes=reduced_genes,
         **final_merge_kwargs.merge_clusters_kwargs
     )
     logger.info(f'Completed Merging')

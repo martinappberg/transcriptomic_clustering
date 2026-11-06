@@ -37,7 +37,8 @@ def merge_clusters(
         chunk_size: Optional[int] = None,
         return_markers_df: Optional[bool] = False,
         n_jobs: Optional[int] = 1,
-        de_score_cap: Optional[float] = None
+        de_score_cap: Optional[float] = None,
+        reduced_genes: Optional[List] = None
 ) -> Tuple[Dict[Any, np.ndarray], Any]:
     """
     Merge clusters based on size and differential gene expression score
@@ -73,6 +74,10 @@ def merge_clusters(
     de_score_cap:
         the most that one gene adds to the DE score of a pair (calc_de_score);
         None (the default): no cap
+    reduced_genes:
+        if given, the space of the nearest clusters is the cluster means of adata_norm over these
+        genes (adata_reduced is not used), as scrattch.hicat's final merge (rd.dat.t = norm.dat[markers,]);
+        None (the default): the cluster means of adata_reduced
 
     Returns
     -------
@@ -87,11 +92,15 @@ def merge_clusters(
     # Calculate cluster means on reduced space
     logger.info("Computing reduced cluster means")
     tic = time.perf_counter()
-    cl_means_reduced, _, _ = tc.get_cluster_means(adata_reduced,
-                                               cluster_assignments,
-                                               cluster_by_obs,
-                                               chunk_size,
-                                               low_th=thresholds['low_thresh'])
+    if reduced_genes is None:
+        cl_means_reduced, _, _ = tc.get_cluster_means(adata_reduced,
+                                                   cluster_assignments,
+                                                   cluster_by_obs,
+                                                   chunk_size,
+                                                   low_th=thresholds['low_thresh'])
+    else:
+        cl_means_reduced = gene_cluster_means(adata_norm, cluster_assignments, cluster_by_obs, reduced_genes,
+                                              chunk_size)
     logger.info(f'Completed reduced cluster means')
     toc = time.perf_counter()
     logger.info(f'Reduced Cluster Means Elapsed Time: {toc - tic}')
@@ -165,6 +174,46 @@ def merge_clusters(
 
 
     return cluster_assignments_merge, markers
+
+
+def gene_cluster_means(
+        adata: ad.AnnData,
+        cluster_assignments: Dict[Any, List],
+        cluster_by_obs: np.ndarray,
+        genes: List,
+        chunk_size: Optional[int] = None
+) -> pd.DataFrame:
+    """
+    Means of each cluster over some genes, read in chunks of cells (adata may be file-backed)
+
+    Parameters
+    ----------
+    adata:
+        AnnData object of normalized data
+    cluster_assignments:
+        map of cluster label to cell idx belonging to cluster
+    cluster_by_obs:
+        array of cells with cluster value
+    genes:
+        the genes (var names)
+    chunk_size:
+        number of cells read at a time (default 100,000)
+
+    Returns
+    -------
+    dataframe of cluster means (index=cluster labels, columns=genes)
+    """
+    labels = list(cluster_assignments.keys())
+    gene_idx = adata.var_names.get_indexer(list(genes))
+    if (gene_idx < 0).any():
+        raise ValueError("genes not in adata.var_names")
+    one_hot = tc.cluster_means.get_one_hot_cluster_array(cluster_by_obs, labels)
+    sums = np.zeros((len(labels), len(gene_idx)))
+    for chunk, start, end in adata.chunked_X(chunk_size or 100000):
+        part = one_hot[:, start:end] @ chunk[:, gene_idx]
+        sums += part.toarray() if hasattr(part, 'toarray') else np.asarray(part)
+    sizes = np.array([len(cluster_assignments[k]) for k in labels]).reshape(-1, 1)
+    return pd.DataFrame(sums / sizes, index=labels, columns=list(genes))
 
 
 def merge_two_clusters(
