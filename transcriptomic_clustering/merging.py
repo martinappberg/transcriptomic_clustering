@@ -82,7 +82,7 @@ def merge_clusters(
         if select_markers, set of genes that differentiate clusters, or empty set
     """
     if len(cluster_assignments.keys()) == 1:
-        return cluster_assignments.copy()
+        return cluster_assignments.copy(), set()
 
     # Calculate cluster means on reduced space
     logger.info("Computing reduced cluster means")

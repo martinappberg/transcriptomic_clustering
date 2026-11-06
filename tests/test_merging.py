@@ -386,3 +386,10 @@ def test_merge_clusters_by_de_score_cap():
 
     assert run(None) == 2
     assert run(20) == 1
+
+
+def test_merge_clusters_one_cluster_returns_assignments_and_markers(adata):
+    """One cluster: the assignments and an empty marker set, as for several clusters (onestep_clust unpacks two)"""
+    assignments, markers = merging.merge_clusters(adata, None, {0: list(range(adata.n_obs))}, np.zeros(adata.n_obs))
+    assert assignments == {0: list(range(adata.n_obs))}
+    assert markers == set()
