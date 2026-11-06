@@ -60,3 +60,39 @@ def test_file_notchunked_proj(adata, mean, pcs, x_exp, tmpdir_factory):
     adata.file.close()
 
     np.testing.assert_allclose(ad_proj.X, x_exp)
+
+
+def batch_adata(levels=("a", "b"), n_obs=120, seed=0):
+    rng = np.random.default_rng(seed)
+    x = rng.normal(size=(n_obs, 10))
+    batch = np.array([levels[i % len(levels)] for i in range(n_obs)])
+    x[batch == levels[-1]] += 3.0                     # a batch shift
+    obs = pd.DataFrame({'batch': batch}, index=[f'cell_{i}' for i in range(n_obs)])
+    return ad.AnnData(x, obs=obs, var=pd.DataFrame(index=[f'gene_{i}' for i in range(10)]))
+
+
+def test_project_with_harmony():
+    """Harmony on the projection (harmony_batch_key): the batch shift falls, info records the step"""
+    pytest.importorskip('harmonypy')
+    a = batch_adata(n_obs=600)
+    pcs = pd.DataFrame(np.eye(10, 5), index=a.var_names, columns=[f'PC{i}' for i in range(5)])
+    mean = pd.DataFrame(np.zeros((10,)), index=a.var_names)
+    plain = tc.project(a, pcs, mean)
+    info = {}
+    corrected = tc.project(a, pcs, mean, harmony_batch_key='batch', harmony_kwargs={'random_state': 0}, info=info)
+    shift = lambda m: np.abs(np.asarray(m.X)[a.obs.batch == 'b'].mean(0) - np.asarray(m.X)[a.obs.batch == 'a'].mean(0)).mean()
+    assert corrected.shape == plain.shape
+    assert shift(corrected) < 0.75 * shift(plain)
+    assert info['n_pcs'] == 5 and info['batch_levels'] == 2 and info['harmony_ran'] and info['harmony_iterations'] >= 1
+
+
+def test_project_with_harmony_skips_one_batch_and_small_groups():
+    """One batch level, or fewer cells than harmonypy's 2 clusters need: no correction, and info says so"""
+    pytest.importorskip('harmonypy')
+    for a in (batch_adata(levels=("a",)), batch_adata(n_obs=44)):
+        pcs = pd.DataFrame(np.eye(10, 5), index=a.var_names, columns=[f'PC{i}' for i in range(5)])
+        mean = pd.DataFrame(np.zeros((10,)), index=a.var_names)
+        info = {}
+        out = tc.project(a, pcs, mean, harmony_batch_key='batch', info=info)
+        assert np.allclose(out.X, tc.project(a, pcs, mean).X)
+        assert info['harmony_ran'] is False

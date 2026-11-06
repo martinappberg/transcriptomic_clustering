@@ -59,6 +59,7 @@ setup(
     packages=find_packages(),
     include_package_data=True,
     install_requires=requirements,
+    extras_require={"harmony": ["harmonypy"]},
     description="clustering pipeline for transcriptomic data",
     long_description=readme,
     long_description_content_type='text/markdown',
