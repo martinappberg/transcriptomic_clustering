@@ -13,7 +13,10 @@ def project(
         adata: ad.AnnData,
         principal_comps: pd.DataFrame,
         mean: Optional[pd.DataFrame]=None,
-        chunk_size: Optional[int]=None) -> np.ndarray:
+        chunk_size: Optional[int]=None,
+        harmony_batch_key: Optional[str]=None,
+        harmony_kwargs: Optional[dict]=None,
+        info: Optional[dict]=None) -> np.ndarray:
     """
     Projects data into principal component space
 
@@ -25,6 +28,17 @@ def project(
         principal component Dataframe (rows=genes, columns=components)
     mean:
         mean used for zero centering (rows=genes, column=mean)
+    harmony_batch_key:
+        if given, an obs column of adata: the projection is corrected for it with Harmony
+        (harmonypy; Korsunsky et al. 2019), so that each clustering step and the final merge
+        work on batch-corrected principal components, as Siletti et al. 2023 ran Harmony at
+        each level of their iterative clustering. See harmonize_projection.
+        None (the default): no correction
+    harmony_kwargs:
+        keyword arguments of harmonypy.run_harmony (e.g. random_state, max_iter_harmony)
+    info:
+        if given, a dict that is updated with what the step did: n_pcs, and with a batch key
+        batch_levels, harmony_ran and harmony_iterations
 
     Returns
     -------
@@ -86,7 +100,61 @@ def project(
                 chunk -= mean
             X_proj[start:end,:] = chunk @ principal_comps
 
-    return ad.AnnData(X_proj, obs=adata.obs, var=pd.DataFrame(index=pc_names))
+    projected = ad.AnnData(X_proj, obs=adata.obs, var=pd.DataFrame(index=pc_names))
+    if info is not None:
+        info['n_pcs'] = int(projected.n_vars)
+    if harmony_batch_key is not None:
+        harmonize_projection(projected, harmony_batch_key, harmony_kwargs, info)
+    return projected
+
+
+def harmonize_projection(
+        projected: ad.AnnData,
+        batch_key: str,
+        harmony_kwargs: Optional[dict]=None,
+        info: Optional[dict]=None) -> ad.AnnData:
+    """
+    Corrects projected principal components for a batch column with Harmony, in place
+
+    A group with one batch level has nothing to correct. A group whose number of Harmony
+    clusters (harmony_kwargs['nclust'], else harmonypy's default min(round(n_obs / 30), 100))
+    is below 2 is not corrected either: harmonypy needs at least 2 clusters.
+
+    Parameters
+    ----------
+    projected:
+        adata in principal component space (cells x components) with batch_key in obs
+    batch_key:
+        the obs column of the batch
+    harmony_kwargs:
+        keyword arguments of harmonypy.run_harmony
+    info:
+        if given, updated with batch_levels, harmony_ran and harmony_iterations
+
+    Returns
+    -------
+    projected, with X replaced by the corrected components when Harmony ran
+    """
+    harmony_kwargs = dict(harmony_kwargs or {})
+    batch = projected.obs[batch_key].astype(str)
+    levels = int(batch.nunique())
+    nclust = harmony_kwargs.get('nclust') or int(min(round(projected.n_obs / 30.0), 100))
+    ran, iterations = False, None
+    if levels >= 2 and nclust >= 2:
+        import harmonypy
+        meta = pd.DataFrame({batch_key: batch.to_numpy()}, index=projected.obs_names)
+        ho = harmonypy.run_harmony(np.asarray(projected.X, dtype=np.float64), meta, batch_key, **harmony_kwargs)
+        z = np.asarray(ho.Z_corr)
+        if z.shape != projected.shape:  # harmonypy before 2.0 returns components x cells
+            z = z.T
+        if z.shape != projected.shape:
+            raise ValueError(f'Harmony returned shape {z.shape}, not {projected.shape}')
+        projected.X = z
+        ran, iterations = True, len(ho.kmeans_rounds)
+    if info is not None:
+        info.update(batch_levels=levels, harmony_ran=ran, harmony_iterations=iterations)
+    return projected
+
 
 def latent_project(adata: ad.AnnData,
                     latent_component: Optional[str]=None) -> ad.AnnData:
