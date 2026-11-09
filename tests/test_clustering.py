@@ -177,3 +177,18 @@ def test_get_taynaud_louvain_reproducibility(sample_graph, annoy_taynaud_sample_
 def test_get_vtraag_leiden_reproducibility(sample_graph, annoy_vtraag_sample_partition):
     cluster_by_obs, _ = tc.clustering.get_vtraag_leiden(sample_graph, random_seed=TEST_RANDOM_SEED)
     assert cluster_by_obs == annoy_vtraag_sample_partition
+
+def test_get_annoy_knn_has_k_neighbors_without_the_cell_itself(tmp_path):
+    """Each cell has k neighbors other than itself, as Rphenograph, which scrattch.hicat's jaccard_louvain calls:
+    `neighborMatrix <- find_neighbors(data, k=k+1)[,-1]`; the graph has no self-edge"""
+    import anndata as ad
+    rng = np.random.default_rng(0)
+    adata = ad.AnnData(rng.normal(size=(50, 4)).astype(np.float32))
+    k = 5
+    graph = tc.clustering.get_annoy_knn(adata, k=k, annoy_index_filename=str(tmp_path / "index.ann"), random_seed=1)
+    g = graph.X.tocsr()
+    assert np.all(g.diagonal() == 0), "a cell is its own neighbor"
+    assert np.all(np.diff(g.indptr) == k), "each cell has k neighbors"
+    exact = np.argsort(((adata.X[:, None, :] - adata.X[None, :, :]) ** 2).sum(-1), axis=1)[:, 1:k + 1]
+    recall = np.mean([len(set(g[i].indices) & set(exact[i])) / k for i in range(adata.n_obs)])
+    assert recall > 0.9, recall

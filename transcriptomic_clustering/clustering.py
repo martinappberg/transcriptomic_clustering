@@ -274,12 +274,15 @@ def _search_nn_chunk(idx, k, vec_len, nn_measure, annoy_index_filename):
     Returns
     -----------
     idx: index of the evaluated observation
-    nn_list: list of the indices of the k nearest neighbors to the observation at idx
+    nn_list: list of the indices of the k nearest neighbors to the observation at idx, without the observation
+             itself, as Rphenograph (which scrattch.hicat's jaccard_louvain calls):
+             `neighborMatrix <- find_neighbors(data, k=k+1)[,-1]`
     """
     ai = AnnoyIndex(vec_len, nn_measure)
     ai.load(annoy_index_filename)
     try:
-        return idx, ai.get_nns_by_item(idx, k)
+        nns = ai.get_nns_by_item(idx, k + 1)
+        return idx, [j for j in nns if j != idx][:k]
     finally:
         ai.unload()
 
