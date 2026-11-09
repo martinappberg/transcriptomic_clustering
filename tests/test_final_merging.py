@@ -5,10 +5,12 @@ import numpy as np
 import pandas as pd
 import pytest
 from pandas.testing import assert_series_equal
+from scipy.sparse import csr_matrix
 
 import transcriptomic_clustering as tc
 from transcriptomic_clustering.final_merging import sample_clusters
 from transcriptomic_clustering.final_merging import FinalMergeKwargs
+from transcriptomic_clustering import final_merging
 
 
 @pytest.fixture
