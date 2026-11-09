@@ -259,6 +259,35 @@ def filter_ev_ratios_zscore(explained_variance_ratios, threshold=2):
     return z_scores > threshold
 
 
+def filter_variances_zscore_hicat(explained_variances, threshold=2, tol=0.01):
+    """
+    Mask of the components to keep, as scrattch.hicat's rd_PCA (R/reduceDimension_PCA.R): prcomp(..., tol) leaves
+    out the components whose standard deviation is at most tol times that of the first; of the others, those whose
+    share of their variance has a z-score above the threshold, with R's sd (ddof 1):
+    `v = pca.importance[2,]; select= which((v - mean(v))/sd(v)>th)`
+
+    Parameters
+    ----------
+    explained_variances: np.ndarray of the variance of each component, the largest first
+    threshold: the z-score threshold (hicat's th)
+    tol: hicat's prcomp tol
+
+    Returns
+    -------
+    mask of components to keep
+    """
+    variances = np.asarray(explained_variances, dtype=float)
+    sd = np.sqrt(variances)
+    kept = sd > tol * sd[0]
+    mask = np.zeros(len(variances), dtype=bool)
+    if kept.sum() < 2:
+        return mask
+    shares = variances[kept] / variances[kept].sum()
+    z = (shares - shares.mean()) / shares.std(ddof=1)
+    mask[np.flatnonzero(kept)] = z > threshold
+    return mask
+
+
 def filter_explained_variances_elbow(explained_variances):
     """
     Filters out principal components by removing those whose explained variance
@@ -318,6 +347,7 @@ def filter_components(
         method: Optional[str]='zscore',
         zth: Optional[float]=2,
         max_pcs: Optional[int]=None,
+        tol: Optional[float]=None,
     ) -> pd.DataFrame:
     """"
     Function for filtering pca components
@@ -339,6 +369,10 @@ def filter_components(
         
     zth: threshold for zscore filter
     max_pcs: maximum PCAs to keep
+    tol: zscore filter only. If set, as scrattch.hicat's rd_PCA (`prcomp(..., tol=0.01)`, then
+         `v = summary(pca)$importance[2,]` and `which((v - mean(v))/sd(v)>th)`): the components whose standard
+         deviation is at most tol times that of the first component are left out; the z-scores are of the shares
+         of the variance of the components kept, with the sample standard deviation (ddof 1, R's sd)
 
     Returns
     -------
@@ -357,7 +391,10 @@ def filter_components(
         explained_var_ratios = explained_var_ratios[keep_pcs_mask]
 
     if method == 'zscore':
-        keep_pcs_mask = filter_ev_ratios_zscore(explained_var_ratios, threshold=zth)
+        if tol is None:
+            keep_pcs_mask = filter_ev_ratios_zscore(explained_var_ratios, threshold=zth)
+        else:
+            keep_pcs_mask = filter_variances_zscore_hicat(explained_vars, threshold=zth, tol=tol)
     elif method == 'elbow':
         keep_pcs_mask = filter_explained_variances_elbow(explained_vars)
     elif method is None:
