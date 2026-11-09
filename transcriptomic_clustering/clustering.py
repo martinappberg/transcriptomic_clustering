@@ -200,7 +200,7 @@ def _uniform_csr_from_nn_dict(nn_dict):
 
     return csr_matrix((csr_weights, csr_indices, csr_indptr), shape=(n, n), dtype=float)
 
-def _calc_jaccard(idx, max_union, nn_set_dict):
+def _calc_jaccard(idx, max_union, nn_set_dict, nn_dict):
     """
     Given a dictionary mapping indices to sets of their nearest neighbor indices,
     an index, and a constant value provided for computational convenience computes the
@@ -211,14 +211,16 @@ def _calc_jaccard(idx, max_union, nn_set_dict):
     -----------
     idx: index of the observation to evaluate
     max_union: 2k, provided for computational brevity
-    nn_dict: dictionary mapping indices to sets of their nearest neighbor indices
+    nn_set_dict: dictionary mapping indices to sets of their nearest neighbor indices
+    nn_dict: dictionary mapping indices to lists of their nearest neighbor indices; the
+             coefficients are in the order of this list, which is the order of the csr indices
 
     Returns
     -----------
     idx: index of the evaluated observation
     nn_jaccard: list of jaccard coefficients for the observation's nearest neighbors
     """
-    shared_neighbors = [float(len(nn_set_dict[idx] & nn_set_dict[j])) for j in nn_set_dict[idx]]
+    shared_neighbors = [float(len(nn_set_dict[idx] & nn_set_dict[j])) for j in nn_dict[idx]]
     return idx, [x / (max_union - x) for x in shared_neighbors]
 
 def _jaccard_csr_from_nn_dict(nn_dict, n_jobs = 1):
@@ -243,7 +245,7 @@ def _jaccard_csr_from_nn_dict(nn_dict, n_jobs = 1):
     weight_map = {}
     chunk_size = min(max(1, int(n / n_jobs)), 10000)
     nn_set_dict = {k: set(v) for k,v in nn_dict.items()}
-    picklable_jaccard = functools.partial(_calc_jaccard, max_union = 2*k, nn_set_dict = nn_set_dict)
+    picklable_jaccard = functools.partial(_calc_jaccard, max_union = 2*k, nn_set_dict = nn_set_dict, nn_dict = nn_dict)
     for chunk_result in tqdm(pool.imap_unordered(picklable_jaccard, range(n), chunksize=chunk_size), total=n):
         weight_map[chunk_result[0]] = chunk_result[1]
 

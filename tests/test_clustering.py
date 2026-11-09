@@ -23,6 +23,41 @@ def pca_data():
 def sample_graph():
     return sc.read_h5ad(os.path.join(DIR_NAME, "data/sample_graph.h5ad"))
 
+# The stored sample graph was made with k=15 neighbors that included the cell itself. Without the cell itself
+# (scrattch.hicat's Rphenograph: find_neighbors(data, k=k+1)[,-1]), the same annoy index gives the 14 other cells.
+REF_K = TEST_K - 1
+
+def per_edge_jaccard(nn_lists, n):
+    """The expected graph, computed independently of the package: the weight of edge (i, j) is
+    shared / (2k - shared), with shared the number of neighbors that i and j have in common (Rphenograph's
+    jaccard_coeff, before its division by 2 for the undirected graph)."""
+    sets = {i: set(v) for i, v in nn_lists.items()}
+    k = len(nn_lists[0])
+    expected = np.zeros((n, n))
+    for i, nbrs in nn_lists.items():
+        for j in nbrs:
+            shared = len(sets[i] & sets[j])
+            expected[i, j] = shared / (2 * k - shared)
+    return expected
+
+@pytest.fixture
+def reference_neighbors(sample_graph):
+    """The neighbors of each cell in the stored sample graph, without the cell itself."""
+    g = sample_graph.X.tocsr()
+    return {i: [j for j in g.indices[g.indptr[i]:g.indptr[i + 1]] if j != i] for i in range(g.shape[0])}
+
+@pytest.fixture
+def expected_jaccard_graph(reference_neighbors):
+    return per_edge_jaccard(reference_neighbors, len(reference_neighbors))
+
+@pytest.fixture
+def expected_uniform_graph(reference_neighbors):
+    n = len(reference_neighbors)
+    expected = np.zeros((n, n), dtype='float32')
+    for i, nbrs in reference_neighbors.items():
+        expected[i, nbrs] = 1
+    return expected
+
 @pytest.fixture
 def sample_index_file():
     return os.path.join(DIR_NAME, "data/sample_annoy_index.ann")
@@ -103,27 +138,35 @@ def test_jaccard_csr_from_nn_dict(sample_nn_dict):
     result_matrix = tc.clustering._jaccard_csr_from_nn_dict(sample_nn_dict).todense()
     assert np.array_equal(expected_matrix, result_matrix)
 
-def test_annoy_build_csr_nn_graph_reproducibility(pca_data, sample_graph, sample_index_file):
-    graph_csr = tc.clustering._annoy_build_csr_nn_graph(pca_data, sample_index_file, TEST_K)
-    assert np.array_equal(sample_graph.X.toarray(), graph_csr.toarray().astype('float32'))
+def test_jaccard_weight_of_each_edge_belongs_to_that_edge():
+    """Annoy lists the neighbors by distance, not by index. Each weight must be the coefficient of its own
+    edge (i, j), not of another edge of row i."""
+    rng = np.random.default_rng(0)
+    n, k = 40, 6
+    nn_lists = {i: [int(j) for j in rng.permutation([x for x in range(n) if x != i])[:k]] for i in range(n)}
+    result = tc.clustering._jaccard_csr_from_nn_dict({i: list(v) for i, v in nn_lists.items()}).toarray()
+    np.testing.assert_allclose(result, per_edge_jaccard(nn_lists, n))
 
-def test_annoy_build_csr_nn_graph_reproducibility_uniform(pca_data, sample_graph, sample_index_file):
-    uniform_sample_graph_arr = (sample_graph.X.toarray() > 0).astype('float32')
-    graph_csr = tc.clustering._annoy_build_csr_nn_graph(pca_data, sample_index_file, TEST_K, weighting_method='uniform')
-    assert np.array_equal(uniform_sample_graph_arr, graph_csr.toarray())
+def test_annoy_build_csr_nn_graph_reproducibility(pca_data, expected_jaccard_graph, sample_index_file):
+    graph_csr = tc.clustering._annoy_build_csr_nn_graph(pca_data, sample_index_file, REF_K)
+    np.testing.assert_allclose(graph_csr.toarray(), expected_jaccard_graph)
 
-def test_annoy_build_csr_nn_graph_reproducibility_multithread(pca_data, sample_graph, sample_index_file):
-    graph_csr = tc.clustering._annoy_build_csr_nn_graph(pca_data, sample_index_file, TEST_K, n_jobs=8)
-    assert np.array_equal(sample_graph.X.toarray(), graph_csr.toarray().astype('float32'))
+def test_annoy_build_csr_nn_graph_reproducibility_uniform(pca_data, expected_uniform_graph, sample_index_file):
+    graph_csr = tc.clustering._annoy_build_csr_nn_graph(pca_data, sample_index_file, REF_K, weighting_method='uniform')
+    assert np.array_equal(expected_uniform_graph, graph_csr.toarray())
+
+def test_annoy_build_csr_nn_graph_reproducibility_multithread(pca_data, expected_jaccard_graph, sample_index_file):
+    graph_csr = tc.clustering._annoy_build_csr_nn_graph(pca_data, sample_index_file, REF_K, n_jobs=8)
+    np.testing.assert_allclose(graph_csr.toarray(), expected_jaccard_graph)
 
 def test_annoy_build_csr_nn_graph_bad_weighting(pca_data, sample_index_file):
     with pytest.raises(ValueError) as err:
         graph_csr = tc.clustering._annoy_build_csr_nn_graph(pca_data, sample_index_file, TEST_K, weighting_method='fake method')
     assert str(err.value) == 'fake method is not a valid weighting option! Must use jaccard or uniform'
 
-def test_get_annoy_knn_new_index(pca_data, sample_graph, sample_index_file):
-    graph_adata = tc.clustering.get_annoy_knn(pca_data, TEST_K, random_seed=TEST_RANDOM_SEED)
-    assert np.array_equal(sample_graph.X.toarray(), graph_adata.X.toarray())
+def test_get_annoy_knn_new_index(pca_data, expected_jaccard_graph):
+    graph_adata = tc.clustering.get_annoy_knn(pca_data, REF_K, random_seed=TEST_RANDOM_SEED)
+    np.testing.assert_allclose(graph_adata.X.toarray(), expected_jaccard_graph, rtol=1e-6)
 
 
 @pytest.mark.parametrize("fail", [False, True])
@@ -150,13 +193,13 @@ def test_annoy_caller_index_is_retained(tmp_path):
     second = tc.clustering.get_annoy_knn(data, 3, annoy_index_filename=path)
     np.testing.assert_array_equal(first.X.toarray(), second.X.toarray())
 
-def test_get_annoy_knn_reproducibility(pca_data, sample_graph, sample_index_file):
-    graph_adata = tc.clustering.get_annoy_knn(pca_data, TEST_K, random_seed=TEST_RANDOM_SEED, annoy_index_filename=sample_index_file)
-    assert np.array_equal(sample_graph.X.toarray(), graph_adata.X.toarray())
+def test_get_annoy_knn_reproducibility(pca_data, expected_jaccard_graph, sample_index_file):
+    graph_adata = tc.clustering.get_annoy_knn(pca_data, REF_K, random_seed=TEST_RANDOM_SEED, annoy_index_filename=sample_index_file)
+    np.testing.assert_allclose(graph_adata.X.toarray(), expected_jaccard_graph, rtol=1e-6)
 
-def test_get_annoy_knn_reproducibility_multi_thread(pca_data, sample_graph, sample_index_file):
-    graph_adata = tc.clustering.get_annoy_knn(pca_data, TEST_K, n_jobs=8, random_seed=TEST_RANDOM_SEED, annoy_index_filename=sample_index_file)
-    assert np.array_equal(sample_graph.X.toarray(), graph_adata.X.toarray())
+def test_get_annoy_knn_reproducibility_multi_thread(pca_data, expected_jaccard_graph, sample_index_file):
+    graph_adata = tc.clustering.get_annoy_knn(pca_data, REF_K, n_jobs=8, random_seed=TEST_RANDOM_SEED, annoy_index_filename=sample_index_file)
+    np.testing.assert_allclose(graph_adata.X.toarray(), expected_jaccard_graph, rtol=1e-6)
 
 def test_get_taynaud_louvain_behaviour(sample_graph):
     sample_partition = {i: i % 4 for i in range(284)}
