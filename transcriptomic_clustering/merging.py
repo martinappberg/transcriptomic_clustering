@@ -566,8 +566,11 @@ def merge_clusters_by_de(
             scores = score_pairs(batch)
             for pair in batch:
                 scored[pair] = (float(scores.loc[pair, 'score']), int(scores.loc[pair, 'num']))
-            passing = [(scored[p][0], i, p) for i, p in enumerate(pairs)
-                       if p in scored and (scored[p][0] < score_th or scored[p][1] < min_genes)]
+            # equal scores keep the order in which the pairs were scored, as scrattch.hicat's merge_cl
+            # (R/merge_cl.R: sc = sort(sc) over names(de.genes), whose names are in the order of scoring)
+            current = set(pairs)
+            passing = [(scored[p][0], i, p) for i, p in enumerate(q for q in scored if q in current)
+                       if scored[p][0] < score_th or scored[p][1] < min_genes]
             if passing:
                 to_merge = [(p, s) for s, _, p in sorted(passing)]
                 break

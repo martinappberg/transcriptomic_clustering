@@ -539,3 +539,43 @@ def test_update_similarity_of_the_merged_clusters_equals_a_full_computation():
     full = merging.calculate_similarity(rd, group_rows=list(rd.index), group_cols=list(rd.index))
     assert_frame_equal(got, full)
     assert merging.nearest_pairs_by_similarity(got, 2) == merging.nearest_pairs_by_similarity(full, 2)
+
+
+def test_equal_de_scores_merge_in_the_order_of_scoring_as_hicat_merge_cl():
+    """Two passing pairs with the same score: hicat's merge_cl (R/merge_cl.R, sort(sc) over names(de.genes)) takes the
+    pair that was scored first. Toy case 17 of the independent check of 2026-11-09 (six clusters in two dimensions, a
+    stand-in DE score): after three merges, the old pair (3, 6) and the new pair (1, 3) both score 120. merge_cl merges
+    (3, 6) and ends with {1, 2, 4, 5}, {3, 6}; the order of the current similarity merged (1, 3) instead."""
+    from unittest.mock import patch
+    import math
+    rows = [(1, 5, 0.0, 2.5225, 1.6191), (2, 8, 0.0, 3.0936, 1.8015), (3, 30, 1.0, 0.2003, -3.5005),
+            (4, 30, 0.0, 4.9529, 2.3732), (5, 30, 0.0, 2.813, 1.2467), (6, 12, 2.0, -6.5673, -0.6601)]
+    start, assign, owner = 0, {}, {}
+    for lab, size, _, _, _ in rows:
+        assign[lab] = list(range(start, start + size))
+        for c in assign[lab]:
+            owner[c] = lab
+        start += size
+    labels = list(assign)
+    rd = pd.DataFrame([[r[3], r[4]] for r in rows], index=labels, dtype=float)
+    tagcell = np.repeat([r[2] for r in rows], [r[1] for r in rows])
+    merging.merge_small_clusters(rd, assign, 4)
+    labels = list(assign)
+    means = pd.DataFrame({"tag": [tagcell[assign[l]].mean() for l in labels]}, index=labels)
+    ones = pd.DataFrame({"tag": [1.0] * len(labels)}, index=labels)
+
+    def stand_in(pairs, cl_means, cl_vars, cl_present, cl_size, thresholds, de_score_cap=None):
+        res = {}
+        for a, b in pairs:
+            d = abs(cl_means.at[a, "tag"] - cl_means.at[b, "tag"])
+            dd = round(d * 2) / 2
+            res[(a, b)] = {"score": 60.0 * dd * (2 if min(cl_size[a], cl_size[b]) >= 8 else 1),
+                           "num": math.floor(4 * dd) + 2}
+        return pd.DataFrame(res).T
+
+    th = {'q1_thresh': 0.5, 'q2_thresh': None, 'cluster_size_thresh': 4, 'qdiff_thresh': 0.7, 'padj_thresh': 0.01,
+          'lfc_thresh': 1.0, 'score_thresh': 150, 'low_thresh': 1, 'min_genes': 5}
+    with patch.object(tc, 'de_pairs_ebayes', stand_in):
+        merging.merge_clusters_by_de(assign, means, ones.copy(), ones.copy(), rd, th, k=3)
+    groups = sorted(sorted({owner[c] for c in v}) for v in assign.values())
+    assert groups == [[1, 2, 4, 5], [3, 6]], groups
