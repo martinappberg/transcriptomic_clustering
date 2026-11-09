@@ -487,13 +487,21 @@ def merge_clusters_by_de(
     k: Optional[int] = 2,
     de_method: Optional[Literal['ebayes', 'chisq']] = 'ebayes',
     de_score_cap: Optional[float] = None,
+    pair_batch: int = 40,
 ):
     """
-    Merge clusters by the calculated gene differential expression score
+    Merge clusters by the differential expression score of neighbouring pairs, as scrattch.hicat's merge_cl
+    (R/merge_cl.R). Each round:
 
-    1. get k nearest clusters for each cluster in a reduced space
-    2. calculate differential expression scores for all pairs
-    3. sort scores by lowest and loop through them, merging pairs with scores lower than threshold
+    1. the pairs of each cluster and its k nearest clusters in the reduced space, the most similar pair first;
+    2. the DE scores of the pairs, `pair_batch` new pairs at a time in that order, until a scored pair passes the
+       merge test (hicat's pairBatch = 40). A pair keeps its score until one of its clusters merges;
+    3. the pairs that pass, the lowest score first: the first pair merges; another pair merges only when its score
+       is below half of score_thresh and it shares no cluster with an earlier pair that passed. hicat:
+       `if(i == 1 | sc[i] < de.param$de.score.th /2  & length(intersect(p, merged))==0)`.
+
+    The merge test is hicat's test_merge (undirectional): `to.merge=de.pair$score < de.param$de.score.th`, else
+    `to.merge=de.pair$num < de.param$min.genes`. The merging stops when every pair has a score and none passes.
 
     Parameters
     ----------
@@ -515,6 +523,8 @@ def merge_clusters_by_de(
         threshold use de calculation
     de_score_cap:
         the most that one gene adds to the DE score of a pair (calc_de_score); None: no cap
+    pair_batch:
+        the number of new pairs scored at a time (hicat's pairBatch)
 
     Returns
     -------
@@ -528,81 +538,90 @@ def merge_clusters_by_de(
     min_genes = thresholds.pop('min_genes')
     thresholds.pop('low_thresh')
 
-    merged_cluster_dsts = None
-    while len(cluster_assignments.keys()) > 1:
-        # Use updated cluster means in reduced space to get nearest neighbors for each cluster
-        # Steps 1-3
-        logger.info(f"Getting {k} nearest clusters")
-        neighbor_pairs = get_k_nearest_clusters(cluster_means_rd, merged_cluster_dsts, k)
-        neighbor_pairs = order_pairs(neighbor_pairs)
-        logger.info(f"Completed {k} nearest clusters")
-        if len(neighbor_pairs) == 0:
-            break
-
-        # Step 4: Get DE for pairs based on de_method
-        logger.info(f"Calculating de scores using {de_method}")
+    def score_pairs(pairs):
         if de_method == 'ebayes':
-            scores = tc.de_pairs_ebayes(
-                neighbor_pairs,
-                cluster_means,
-                cluster_variances,
-                present_cluster_means,
-                cl_size,
-                thresholds,
-                de_score_cap=de_score_cap,
-            )
-        elif de_method == 'chisq':
-            scores = tc.de_pairs_chisq(
-                neighbor_pairs,
-                cluster_means,
-                present_cluster_means,
-                cl_size,
-                thresholds,
-                de_score_cap=de_score_cap,
-            )
-        else:
-            raise ValueError(f'Unknown de_method {de_method}, must be one of [chisq, ebayes]')
+            return tc.de_pairs_ebayes(pairs, cluster_means, cluster_variances, present_cluster_means, cl_size,
+                                      thresholds, de_score_cap=de_score_cap)
+        if de_method == 'chisq':
+            return tc.de_pairs_chisq(pairs, cluster_means, present_cluster_means, cl_size, thresholds,
+                                     de_score_cap=de_score_cap)
+        raise ValueError(f'Unknown de_method {de_method}, must be one of [chisq, ebayes]')
 
-        # Sort scores
-        logger.info("Sorting DE Scores")
-        scores = scores.sort_values(by='score')
-
-        # Peek at first score and if > threshold, they are all greater than threshold
-        score = scores.iloc[0].score
-        if score >= score_th:
+    scored = {}     # pair: (score, number of DE genes), kept until one of its clusters merges
+    similarity, changed = None, []
+    while len(cluster_assignments.keys()) > 1:
+        logger.info(f"Getting {k} nearest clusters")
+        similarity = update_similarity(cluster_means_rd, similarity, changed)
+        pairs = nearest_pairs_by_similarity(similarity, k)
+        changed = []
+        logger.info(f"Completed {k} nearest clusters")
+        if len(pairs) == 0:
             break
 
-        # Merge pairs below threshold, skipping already merged clusters
-        merged_clusters = set()
-        merged_cluster_dsts = set()
-        logger.info("Merging clusters by DE score")
-        for pair, row in scores.iterrows():
-            score = row.score
-
-            # Merge if score < th or number of de genes < min)
-            if score >= score_th and row.num > min_genes:
+        to_merge = []
+        new = [p for p in pairs if p not in scored]
+        while new:
+            batch = new[:pair_batch]
+            logger.info(f"Calculating de scores using {de_method}")
+            scores = score_pairs(batch)
+            for pair in batch:
+                scored[pair] = (float(scores.loc[pair, 'score']), int(scores.loc[pair, 'num']))
+            passing = [(scored[p][0], i, p) for i, p in enumerate(pairs)
+                       if p in scored and (scored[p][0] < score_th or scored[p][1] < min_genes)]
+            if passing:
+                to_merge = [(p, s) for s, _, p in sorted(passing)]
                 break
+            new = [p for p in pairs if p not in scored]
+        if not to_merge:
+            break
 
-            dst_label, src_label = pair
+        logger.info("Merging clusters by DE score")
+        in_earlier_pair = set()
+        for i, (pair, score) in enumerate(to_merge):
+            if i == 0 or (score < score_th / 2 and not (set(pair) & in_earlier_pair)):
+                dst_label, src_label = pair
+                logger.debug(f"Merging cluster {src_label} into {dst_label} -- de score: {score}")
+                merge_cluster_means_vars(cluster_assignments, src_label, dst_label, cluster_means_rd, None)
+                merge_two_clusters(cluster_assignments, src_label, dst_label, cluster_means, cluster_variances,
+                                   present_cluster_means)
+                cl_size[dst_label] += cl_size.pop(src_label)
+                scored = {p: v for p, v in scored.items() if not (set(p) & set(pair))}
+                changed.append(dst_label)
+            in_earlier_pair |= set(pair)
 
-            if dst_label in merged_clusters or src_label in merged_clusters:
-                continue
 
-            logger.debug(f"Merging cluster {src_label} into {dst_label} -- de score: {score}")
+def update_similarity(cluster_means_rd: pd.DataFrame, similarity: Optional[pd.DataFrame],
+                      changed: List[Any]) -> pd.DataFrame:
+    """
+    The similarity of each pair of clusters in the reduced space (calculate_similarity; the diagonal is NaN), for the
+    clusters of cluster_means_rd. With a similarity of the round before, only the rows and columns of the clusters in
+    `changed` (merged in the round) are computed again: a correlation depends only on its two clusters. The
+    normalized distance of 2 or fewer dimensions is divided by the largest distance, so it is computed again in full.
+    """
+    labels = list(cluster_means_rd.index)
+    if similarity is None or cluster_means_rd.shape[1] <= 2:
+        return calculate_similarity(cluster_means_rd, group_rows=labels, group_cols=labels)
+    similarity = similarity.loc[labels, labels].copy()
+    for c in changed:
+        row = calculate_similarity(cluster_means_rd, group_rows=[c], group_cols=labels).loc[c]
+        similarity.loc[c, :] = row
+        similarity.loc[:, c] = row
+    return similarity
 
-            # Update cluster means on reduced space
-            merge_cluster_means_vars(cluster_assignments, src_label, dst_label, cluster_means_rd, None)
 
-            # Update cluster means and cluster assignments
-            merge_two_clusters(cluster_assignments, src_label, dst_label, cluster_means, cluster_variances, present_cluster_means)
-            merged_clusters.add(src_label)
-            merged_clusters.add(dst_label)
-            merged_cluster_dsts.add(dst_label)
-
-            # Merge cluster sizes
-            cl_size[dst_label] += cl_size[src_label]
-            cl_size.pop(src_label)
-
+def nearest_pairs_by_similarity(similarity: pd.DataFrame, k: int) -> List[Tuple[Any, Any]]:
+    """
+    The pairs of each cluster and its k nearest clusters (the k most similar; ties by label order), each pair as
+    (smaller label, larger label), the most similar pair first; ties by label. hicat's merge_cl takes the 3 nearest
+    clusters of each cluster and orders the pairs so: `merge.pairs = merge.pairs[order(merge.pairs$sim,decreasing=T),]`.
+    """
+    labels = list(similarity.index)
+    k = min(k, len(labels) - 1)
+    s = similarity.to_numpy(dtype=float, copy=True)
+    s[np.isnan(s)] = -np.inf
+    nearest = np.argsort(-s, axis=1, kind='stable')[:, :k]
+    pairs = {tuple(sorted((labels[i], labels[j]))) for i in range(len(labels)) for j in nearest[i]}
+    return sorted(pairs, key=lambda p: (-similarity.at[p[0], p[1]], p))
 
 
 def get_k_nearest_clusters(
