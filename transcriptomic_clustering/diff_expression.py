@@ -202,6 +202,31 @@ def filter_gene_stats(
     return de_stats.loc[mask]
 
 
+def order_by_pvalue(de_stats: pd.DataFrame) -> pd.DataFrame:
+    """
+    Order the genes as scrattch.hicat's de_stats_pair does,
+    `order(df$pval, -abs(df$lfc))`: by the unadjusted p-value, and genes with
+    the same p-value by the larger absolute log fold change. hicat's
+    select_markers takes the first n.markers up and down genes of each pair in
+    this order. The sort is stable, so genes that are still tied keep their
+    column order, as with R's order.
+
+    Parameters
+    ----------
+    de_stats:
+        dataframe with the columns 'p_value' and 'lfc', one row for each gene
+
+    Returns
+    -------
+    the same rows in the order of hicat's de_stats_pair
+    """
+    order = np.lexsort((
+        -np.abs(de_stats['lfc'].to_numpy(dtype=float)),
+        de_stats['p_value'].to_numpy(dtype=float),
+    ))
+    return de_stats.iloc[order]
+
+
 def get_qdiff(q1, q2) -> np.array:
     """
     Calculate normalized difference between q1 and q2 proportions
@@ -305,6 +330,8 @@ def de_pairs_chisq(
             **de_thresholds
         )
         down_score = calc_de_score(de_pair_down['p_adj'].values, de_score_cap)
+        de_pair_up = order_by_pvalue(de_pair_up)
+        de_pair_down = order_by_pvalue(de_pair_down)
 
         de_pairs[pair] = {
             'score': up_score + down_score,

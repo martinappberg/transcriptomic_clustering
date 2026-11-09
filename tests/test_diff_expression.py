@@ -295,3 +295,14 @@ def test_calc_de_score_cap():
     assert np.isinf(de.calc_de_score(padj))
     assert np.isclose(de.calc_de_score(padj, cap=20), 43.0)
     assert de.calc_de_score(np.array([]), cap=20) == 0
+
+
+def test_order_by_pvalue():
+    """scrattch.hicat's de_stats_pair order, order(df$pval, -abs(df$lfc)): p-value first, then the larger |lfc|; genes
+    still tied keep their column order"""
+    stats = pd.DataFrame(
+        {"p_value": [0.01, 0.0, 0.0, 0.5, 0.0], "lfc": [5.0, -1.0, 3.0, 2.0, 1.0], "p_adj": [0.1, 0.0, 0.0, 1.0, 0.0]},
+        index=["g0", "g1", "g2", "g3", "g4"])
+    ordered = de.order_by_pvalue(stats)
+    assert ordered.index.to_list() == ["g2", "g1", "g4", "g0", "g3"]
+    pd.testing.assert_frame_equal(ordered.sort_index(), stats)

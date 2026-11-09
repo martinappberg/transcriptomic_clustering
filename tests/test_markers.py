@@ -3,6 +3,7 @@ import pandas as pd
 import numpy as np
 import pytest
 from transcriptomic_clustering.markers import select_marker_genes
+from transcriptomic_clustering.de_ebayes import de_pairs_ebayes
 
 
 def test_select_marker_genes():
@@ -104,3 +105,32 @@ def test_marker_names_for_unsorted_gene_columns(method, return_frame, column_ind
         assert result.loc[(0, 1), "down_genes"] == ["down"]
     else:
         assert result == {"up", "down"}
+
+def _pair_with_genes_out_of_pvalue_order():
+    """Two clusters of 10 cells. In each direction the column order of the genes (big_noisy, mid, small_precise) is the
+    reverse of their p-value order, and the gene with the largest |lfc| has the largest p-value (variance 40)."""
+    genes = ["up_big_noisy", "up_mid", "up_small_precise", "down_big_noisy", "down_mid", "down_small_precise"]
+    means = pd.DataFrame([[8., 5., 3., 0., 0., 0.], [0., 0., 0., 8., 5., 3.]], columns=genes)
+    variances = pd.DataFrame([[40., 1., 0.05, 40., 1., 0.05]] * 2, columns=genes)
+    present = pd.DataFrame([[0.6, 0.8, 0.95, 0.05, 0.05, 0.02], [0.05, 0.05, 0.02, 0.6, 0.8, 0.95]], columns=genes)
+    assignments = {0: list(range(10)), 1: list(range(10, 20))}
+    return assignments, means, variances, present
+
+
+@pytest.mark.parametrize("method", ["chisq", "ebayes"])
+def test_marker_genes_in_pvalue_order(method):
+    """scrattch.hicat's select_markers takes the first n.markers up and down genes of each pair in the order of
+    de_stats_pair, order(df$pval, -abs(df$lfc)): by p-value, not by gene column."""
+    assignments, means, variances, present = _pair_with_genes_out_of_pvalue_order()
+    thresholds = {"q1_thresh": 0.5, "qdiff_thresh": 0.7, "cluster_size_thresh": 3, "padj_thresh": 0.1,
+                  "lfc_thresh": 1}
+    kwargs = dict(cluster_assignments=assignments, cluster_means=means, cluster_variances=variances,
+                  present_cluster_means=present, thresholds=thresholds, de_method=method)
+    pairs = select_marker_genes(**kwargs, return_markers_df=True)
+    assert pairs.loc[(0, 1), "up_genes"] == ["up_small_precise", "up_mid", "up_big_noisy"]
+    assert pairs.loc[(0, 1), "down_genes"] == ["down_small_precise", "down_mid", "down_big_noisy"]
+    assert select_marker_genes(**kwargs, n_markers=1) == {"up_small_precise", "down_small_precise"}
+    if method == "ebayes":
+        serial = de_pairs_ebayes([(0, 1)], means, variances, present, {0: 10, 1: 10}, thresholds)
+        assert serial.loc[(0, 1), "up_genes"] == ["up_small_precise", "up_mid", "up_big_noisy"]
+        assert serial.loc[(0, 1), "down_genes"] == ["down_small_precise", "down_mid", "down_big_noisy"]

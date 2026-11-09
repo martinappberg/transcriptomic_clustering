@@ -13,7 +13,7 @@ from scipy import stats
 from scipy.special import digamma, polygamma
 from statsmodels.stats.multitest import multipletests
 
-from .diff_expression import get_qdiff, filter_gene_stats, calc_de_score
+from .diff_expression import get_qdiff, filter_gene_stats, calc_de_score, order_by_pvalue
 
 import multiprocessing as mp
 from functools import partial
@@ -223,6 +223,8 @@ def de_pairs_ebayes(
             **de_thresholds
         )
         down_score = calc_de_score(de_pair_down['p_adj'].values, de_score_cap)
+        de_pair_up = order_by_pvalue(de_pair_up)
+        de_pair_down = order_by_pvalue(de_pair_down)
 
         de_pairs[(cluster_a, cluster_b)] = {
             'score': up_score + down_score,
@@ -285,6 +287,8 @@ def process_pair(cl_means, cl_present, cl_size, stdev_unscaled, df, df_prior, si
         **de_thresholds
     )
     down_score = calc_de_score(de_pair_down['p_adj'].values, de_score_cap)
+    de_pair_up = order_by_pvalue(de_pair_up)
+    de_pair_down = order_by_pvalue(de_pair_down)
 
     return (pair, {
         'score': up_score + down_score,
