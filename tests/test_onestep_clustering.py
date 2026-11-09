@@ -60,3 +60,19 @@ def test_onestep_clust_k_is_at_most_half_the_cells():
     """With few cells the neighbour count is half the number of cells (rounded), as scrattch.hicat's onestep_clust"""
     assert _k_of_onestep(20)["k"] == 10
     assert _k_of_onestep(31)["k"] == 15
+
+
+def test_onestep_clust_without_a_passing_pc_is_one_cluster():
+    """When no principal component passes the filter, the cells are one cluster and no markers, as scrattch.hicat's
+    rd_PCA (`if(length(tmp)==0){ return(NULL) }`, so onestep_clust returns no split). The step does not stop, also
+    with Harmony on the projection (which cannot run on 0 components)"""
+    rng = np.random.default_rng(0)
+    obs = pd.DataFrame({"batch": ["x", "y"] * 45}, index=[f"c{i}" for i in range(90)])
+    adata = tc.normalize(ad.AnnData(csr_matrix(rng.poisson(2, (90, 50)).astype(np.float32)), obs=obs))
+    no_pc = lambda pcs, *args, **kwargs: pcs.iloc[:, :0]
+    with patch.object(tc.dimension_reduction, "filter_components", no_pc):
+        clusters, markers = oc.onestep_clust(adata, onestep_kwargs=oc.OnestepKwargs(
+            pca_kwargs={"cell_select": 500000}, filter_pcs_kwargs={"method": "zscore", "zth": 2},
+            project_kwargs={"harmony_batch_key": "batch"}), random_seed=1)
+    assert [sorted(c) for c in clusters] == [list(range(90))]
+    assert not markers
