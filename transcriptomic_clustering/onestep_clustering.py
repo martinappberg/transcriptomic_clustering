@@ -112,7 +112,13 @@ def onestep_clust(
         logger.info(f'Filtered to {components.shape[1]} principal components')
         toc = time.perf_counter()
         logger.info(f'Filter PCA Elapsed Time: {toc - tic}')
-        
+
+        # No component passes the filter: the cells are one cluster, as scrattch.hicat, where rd_PCA returns NULL
+        # (`if(length(tmp)==0){ return(NULL) }`) and onestep_clust then returns no split
+        if components.shape[1] == 0:
+            logger.info('No principal component passes the filter: one cluster')
+            return [list(range(norm_adata.n_obs))], set()
+
         #Projection
         logger.info("Projecting normalized adata into PCA space")
         tic = time.perf_counter()
