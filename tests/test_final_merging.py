@@ -61,16 +61,16 @@ def first_neighbor_pairs(norm, clusters, **kwargs):
     """The cluster pairs of the first nearest-neighbor search of merge_clusters (k = 1), and the genes of its space"""
     from transcriptomic_clustering import merging
     seen = []
-    real = merging.get_k_nearest_clusters
+    real = merging.update_similarity
 
-    def spy(cluster_means, cluster_labels=None, k=2):
-        out = real(cluster_means, cluster_labels, k)
-        seen.append((list(cluster_means.columns), set(merging.order_pairs(out))))
+    def spy(cluster_means, similarity, changed):
+        out = real(cluster_means, similarity, changed)
+        seen.append((list(cluster_means.columns), set(merging.nearest_pairs_by_similarity(out, 1))))
         return out
 
     assign = {i: c for i, c in enumerate(clusters)}
     by_obs = np.concatenate([[i] * len(c) for i, c in enumerate(clusters)]).astype(float)
-    with patch.object(merging, "get_k_nearest_clusters", spy):
+    with patch.object(merging, "update_similarity", spy):
         merging.merge_clusters(norm, kwargs.pop("reduced", None), assign, by_obs, k=1, n_markers=None, **kwargs)
     return seen[0]
 

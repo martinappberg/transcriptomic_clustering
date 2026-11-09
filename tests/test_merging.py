@@ -387,14 +387,77 @@ def test_merge_clusters_by_de_score_cap(de_method, up_in):
         cluster_means = pd.DataFrame(np.array(rows), index=[0, 1], columns=genes)
         cluster_variances = pd.DataFrame(np.array(variances), index=[0, 1], columns=genes)
         present_cluster_means = pd.DataFrame(np.array(present), index=[0, 1], columns=genes)
+        # min_genes 1: the pair of one DE gene is tested by its score only (hicat's test_merge also merges a pair of
+        # fewer than min_genes DE genes)
         thresholds = {'q1_thresh': 0.5, 'q2_thresh': None, 'cluster_size_thresh': 4, 'qdiff_thresh': 0.7,
-                      'padj_thresh': 0.01, 'lfc_thresh': 1.0, 'score_thresh': 150, 'low_thresh': 1, 'min_genes': 5}
+                      'padj_thresh': 0.01, 'lfc_thresh': 1.0, 'score_thresh': 150, 'low_thresh': 1, 'min_genes': 1}
         merging.merge_clusters_by_de(cluster_assignments, cluster_means, cluster_variances, present_cluster_means,
                                      cluster_means.copy(), thresholds, k=1, de_method=de_method, de_score_cap=cap)
         return len(cluster_assignments)
 
     assert run(None) == 2
     assert run(20) == 1
+
+
+def _merge_with_stand_in_scores(sizes, rd, tag, score_of, k):
+    """merge_clusters_by_de on clusters of the given sizes, positions in the reduced space (rd) and one tag gene, with
+    a stand-in for the DE test: score_of(tag a, tag b, size a, size b) gives (score, number of DE genes)"""
+    from unittest.mock import patch
+    start, assignments = 0, {}
+    for label, n in enumerate(sizes):
+        assignments[label] = list(range(start, start + n))
+        start += n
+    labels = list(assignments)
+    means = pd.DataFrame({'tag': tag}, index=labels, dtype=float)
+    variances = pd.DataFrame({'tag': [1.0] * len(labels)}, index=labels)
+    present = pd.DataFrame({'tag': [1.0] * len(labels)}, index=labels)
+    rd = pd.DataFrame(rd, index=labels, dtype=float)
+
+    def stand_in(pairs, cl_means, cl_vars, cl_present, cl_size, thresholds, de_score_cap=None):
+        out = {}
+        for a, b in pairs:
+            score, num = score_of(cl_means.at[a, 'tag'], cl_means.at[b, 'tag'], cl_size[a], cl_size[b])
+            out[(a, b)] = {'score': score, 'num': num}
+        return pd.DataFrame(out).T
+
+    thresholds = {'q1_thresh': 0.5, 'q2_thresh': None, 'cluster_size_thresh': 4, 'qdiff_thresh': 0.7,
+                  'padj_thresh': 0.01, 'lfc_thresh': 1.0, 'score_thresh': 150, 'low_thresh': 1, 'min_genes': 5}
+    with patch.object(tc, 'de_pairs_ebayes', stand_in):
+        merging.merge_clusters_by_de(assignments, means, variances, present, rd, thresholds, k=k)
+    return sorted(sorted(v) for v in assignments.values())
+
+
+def test_merge_clusters_by_de_merges_one_pair_a_round_as_hicat():
+    """Three clusters of type A (sizes 10, 10, 4) and one of type B (4) on a line in the reduced space. A pair of one
+    type scores 10; a pair of two types scores 12 for each nucleus of the pair, so the two small clusters (A3, B1)
+    score 96, under the threshold 150 but not under half of it, and B1 against the merged A clusters scores 336.
+    scrattch.hicat's merge_cl merges the lowest pair of each round, and another pair only below half the threshold
+    (`if(i == 1 | sc[i] < de.param$de.score.th /2 & length(intersect(p, merged))==0)`): A1 and A2, then A3 with
+    them, and B1 stays apart. Merging every pair under the threshold in one round joins A3 and B1."""
+    def score_of(tag_a, tag_b, n_a, n_b):
+        return (10.0, 10) if abs(tag_a - tag_b) < 0.5 else (12.0 * (n_a + n_b), 10)
+
+    got = _merge_with_stand_in_scores([10, 10, 4, 4], {'x': [0, 1, 2, 3], 'y': [0, 0, 0, 0]}, [0, 0, 0, 1],
+                                      score_of, k=2)
+    assert got == [list(range(24)), list(range(24, 28))]
+
+
+def test_merge_clusters_by_de_min_genes_is_strict_as_hicat():
+    """hicat's test_merge merges a pair whose score passes when it has fewer than min_genes DE genes
+    (`to.merge=de.pair$num < de.param$min.genes`): a pair of exactly min_genes (5) genes with a passing score stays
+    apart, and a pair of 4 merges"""
+    def run(num):
+        def score_of(tag_a, tag_b, n_a, n_b):
+            if tag_a < 5 and tag_b < 5:
+                return 10.0, 10
+            if tag_a >= 5 and tag_b >= 5:
+                return 200.0, num
+            return 500.0, 30
+        return len(_merge_with_stand_in_scores([10, 10, 10, 10], {'x': [0, 1, 10, 11], 'y': [0, 0, 0, 0]},
+                                               [0, 0, 10, 10.5], score_of, k=1))
+
+    assert run(5) == 3
+    assert run(4) == 2
 
 
 def test_merge_clusters_one_cluster_returns_assignments_and_markers(adata):
@@ -416,3 +479,18 @@ def test_merge_cluster_means_vars_gives_the_variance_of_the_cells():
     cells = np.vstack([src, dst])
     assert np.allclose(means.loc['d'], cells.mean(0))
     assert np.allclose(variances.loc['d'], cells.var(0, ddof=1))
+
+
+def test_update_similarity_of_the_merged_clusters_equals_a_full_computation():
+    """The similarity computed again only for the merged clusters equals the similarity of all clusters, after a
+    merge of two clusters (correlation, more than 2 dimensions)"""
+    rng = np.random.default_rng(0)
+    rd = pd.DataFrame(rng.normal(size=(6, 5)), index=list(range(6)))
+    sim = merging.update_similarity(rd, None, [])
+    assignments = {i: list(range(10 * i, 10 * i + 10)) for i in range(6)}
+    merging.merge_cluster_means_vars(assignments, 4, 1, rd, None)
+    assignments[1].extend(assignments.pop(4))
+    got = merging.update_similarity(rd, sim, [1])
+    full = merging.calculate_similarity(rd, group_rows=list(rd.index), group_cols=list(rd.index))
+    assert_frame_equal(got, full)
+    assert merging.nearest_pairs_by_similarity(got, 2) == merging.nearest_pairs_by_similarity(full, 2)
