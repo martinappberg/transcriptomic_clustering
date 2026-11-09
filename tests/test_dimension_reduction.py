@@ -162,3 +162,18 @@ def test_filter_components():
         max_pcs=2
     )
     assert pcs_obtained.columns.to_list() == ['PC_00', 'PC_01']
+
+
+def test_filter_components_zscore_with_hicat_tol():
+    """tol: as scrattch.hicat's rd_PCA, the components with a standard deviation of at most tol times the first are
+    not in the z-score, and the z-score uses R's sd (ddof 1). Variances 100, 40, 10, 5, 4 and 100 tiny ones: with
+    the tiny components in the z-score, the first two pass z > 1.5; without them (hicat), only the first passes"""
+    variances = np.array([100., 40., 10., 5., 4.] + [1e-6] * 100)
+    pcs = pd.DataFrame(np.eye(len(variances))[:10], columns=[f"pc{i}" for i in range(len(variances))])
+    ratios = variances / variances.sum()
+    with_tiny = tc.dimension_reduction.filter_components(pcs, variances, ratios, method="zscore", zth=1.5)
+    hicat = tc.dimension_reduction.filter_components(pcs, variances, ratios, method="zscore", zth=1.5, tol=0.01)
+    v = variances[:5] / variances[:5].sum()
+    z = (v - v.mean()) / v.std(ddof=1)
+    assert list(with_tiny.columns) == ["pc0", "pc1"]
+    assert list(hicat.columns) == [f"pc{i}" for i in range(5) if z[i] > 1.5] == ["pc0"]
