@@ -3,7 +3,6 @@ import logging
 from dataclasses import dataclass, field
 import time
 
-import math
 import numpy as np
 import scanpy as sc
 import anndata as ad
@@ -158,7 +157,10 @@ def onestep_clust(
 
     cluster_louvain_kwargs = onestep_kwargs.cluster_louvain_kwargs.copy()
     k = cluster_louvain_kwargs.pop('k', 15)
-    k = min(k, math.floor(projected_adata.n_vars))
+    # The neighbour count depends on the number of cells only, as in scrattch.hicat's onestep_clust
+    # (R/cluster.R: k = pmin(k.nn, round(nrow(rd.dat)/2)); rd.dat has one row for each cell). It does not depend on
+    # the number of principal components.
+    k = min(k, round(projected_adata.n_obs / 2))
     cluster_by_obs, obs_by_cluster, graph, qc = tc.cluster_louvain(
         projected_adata,
         k=k,
